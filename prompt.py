@@ -2,7 +2,7 @@ import os
 from torch.utils.data import Dataset,DataLoader
 import torch
 from torch import nn
-from transformers import AutoTokenizer,AutoModel
+from transformers import AutoTokenizer,AutoModel,BertModel,BertTokenizer
 from tqdm import tqdm
 def get_data(path,max_len=None,mode='train'):
     with open(os.path.join(path,f'{mode}.txt'),'r',encoding='utf-8') as f:
@@ -39,12 +39,10 @@ class TCdataset(Dataset):
 
         batch_text_idx = []
         batch_label_idx = []
-        batch_now_len = []
         for text,label in zip(batch_text,batch_label):
             text = text+"[MASK]"*2
             text_idx = self.tokenizers.encode(text,add_special_tokens=True)#be+xxx+[MASK][MASK]+ed label[len_]
 
-            batch_now_len.append(len(text_idx))
 
             label_idx = [-100]*(len(text_idx)-3) + self.tokenizers.encode(label,add_special_tokens=False)
 
@@ -57,7 +55,7 @@ class TCdataset(Dataset):
             batch_label_idx.append(label_idx)
 
 
-        return torch.tensor(batch_text_idx),torch.tensor(batch_label_idx),torch.tensor(batch_now_len)
+        return torch.tensor(batch_text_idx),torch.tensor(batch_label_idx)
 
 
 
@@ -66,7 +64,7 @@ class TCdataset(Dataset):
 class Bert_Model(nn.Module):
     def __init__(self,model_name):
         super().__init__()
-        self.backbone = AutoModel.from_pretrained(model_name)
+        self.backbone = BertModel.from_pretrained(model_name)
         self.generater = nn.Linear(768,21128)
 
         self.loss_fn = nn.CrossEntropyLoss()
@@ -83,22 +81,22 @@ class Bert_Model(nn.Module):
             return torch.argmax(x,dim=-1)
 
 if __name__ == "__main__":
-    train_text,train_label = get_data(os.path.join('data'),max_len=500)
-    dev_text,dev_label = get_data(os.path.join('data'),max_len=100,mode='test')
+    train_text,train_label = get_data(os.path.join('data'))
+    dev_text,dev_label = get_data(os.path.join('data'),mode='test')
 
     batch_size = 100
     epoch = 10
     lr = 1e-5
     device = torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu')
-    device = torch.device('cpu')
 
-    model_name = "hfl/chinese-roberta-wwm-ext"
-    tokenizers = AutoTokenizer.from_pretrained(model_name)
+    model_name = "./bert_base_chinese"#hfl/chinese-roberta-wwm-ext
+
+    tokenizers = BertTokenizer.from_pretrained(model_name)
 
     train_dataset = TCdataset(train_text,train_label,tokenizers)
     train_dataloader = DataLoader(train_dataset,batch_size=batch_size,shuffle=True,collate_fn=train_dataset.process_data)
     dev_dataset = TCdataset(dev_text, dev_label, tokenizers)
-    dev_dataloader = DataLoader(dev_dataset, batch_size=2, shuffle=False,
+    dev_dataloader = DataLoader(dev_dataset, batch_size=20, shuffle=False,
                                   collate_fn=dev_dataset.process_data)
 
     model = Bert_Model(model_name).to(device)
@@ -107,7 +105,7 @@ if __name__ == "__main__":
     for e in range(epoch):
         loss_sum = 0
         ba = 0
-        for x,y,batch_len in tqdm(train_dataloader):
+        for x,y in tqdm(train_dataloader):
             x = x.to(device)
             y = y.to(device)
 
@@ -120,14 +118,14 @@ if __name__ == "__main__":
             ba += 1
         print(f'e = {e} loss = {loss_sum / ba:.6f}')
         right = 0
-        for x, y, batch_len in tqdm(dev_dataloader):
+        for x, y in tqdm(dev_dataloader):
             x = x.to(device)
             y = y.to(device)
 
             pre = model(x)
 
-            for p,label,len_ in zip(pre,y,batch_len):
-                right += int((p[len_-3:len_-1]==label[len_-3:len_-1]).all())
+            for p,label in zip(pre,y):
+                right += int((p[label!=-100]==label[label!=-100]).all())
         print(f'acc={right/len(dev_dataset):.5f}')
 
 
