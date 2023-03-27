@@ -7,8 +7,7 @@ from tqdm import tqdm
 def get_data(path,max_len=None,mode='train'):
     with open(os.path.join(path,f'{mode}.txt'),'r',encoding='utf-8') as f:
         all_data = f.read().split('\n')
-    with open(os.path.join(path,'index_2_label.txt'),'r',encoding='utf-8') as f:
-        index_2_label = f.read().split('\n')
+
     all_text,all_label = [],[]
     for data in all_data:
         data = data.split('	')
@@ -32,9 +31,9 @@ class TCdataset(Dataset):
         label = self.all_label[x]
 
         text_prompt = self.prompt_text1 + text + self.prompt_text2
-        return text_prompt,label,len(text_prompt)+2 #给他两个[MASK],所以加2
+        return text_prompt,label,len(text_prompt)+2,label #给他两个[MASK],所以加2
     def process_data(self,data):
-        batch_text,batch_label,batch_len = zip(*data)
+        batch_text,batch_label,batch_len,cla = zip(*data)
         batch_max = max(batch_len)+2
 
         batch_text_idx = []
@@ -55,7 +54,7 @@ class TCdataset(Dataset):
             batch_label_idx.append(label_idx)
 
 
-        return torch.tensor(batch_text_idx),torch.tensor(batch_label_idx)
+        return torch.tensor(batch_text_idx),torch.tensor(batch_label_idx),cla
 
 
 
@@ -78,17 +77,24 @@ class Bert_Model(nn.Module):
             loss = self.loss_fn(x.reshape(-1,x.shape[-1]),label.reshape(-1))
             return loss
         else:
-            return torch.argmax(x,dim=-1)
+            return x
 
 if __name__ == "__main__":
-    train_text,train_label = get_data(os.path.join('data'))
-    dev_text,dev_label = get_data(os.path.join('data'),mode='test')
+    with open(os.path.join('data','index_2_label.txt'),'r',encoding='utf-8') as f:
+        index_2_label = f.read().split('\n')
+    dict_ver = [[6568, 5307], [2791, 772], [5500, 4873], [3136, 5509], [4906, 2825], [4852, 833], [3198, 3124],
+                [860, 5509], [3952, 2767], [2031, 727]]
+    dict_ver0, dict_ver1 = zip(*dict_ver)
+    dict_ver0,dict_ver1 = list(dict_ver0),list(dict_ver1)
+
+    train_text,train_label = get_data(os.path.join('data'),max_len=1000)
+    dev_text,dev_label = get_data(os.path.join('data'),max_len=300,mode='test')
 
     batch_size = 100
     epoch = 10
     lr = 1e-5
     device = torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu')
-
+    # device = torch.device('cpu')
     model_name = "./bert_base_chinese"#hfl/chinese-roberta-wwm-ext
 
     tokenizers = BertTokenizer.from_pretrained(model_name)
@@ -105,7 +111,7 @@ if __name__ == "__main__":
     for e in range(epoch):
         loss_sum = 0
         ba = 0
-        for x,y in tqdm(train_dataloader):
+        for x,y,cla in tqdm(train_dataloader):
             x = x.to(device)
             y = y.to(device)
 
@@ -118,14 +124,19 @@ if __name__ == "__main__":
             ba += 1
         print(f'e = {e} loss = {loss_sum / ba:.6f}')
         right = 0
-        for x, y in tqdm(dev_dataloader):
+        for x, y,cla in tqdm(dev_dataloader):
             x = x.to(device)
             y = y.to(device)
 
             pre = model(x)
 
-            for p,label in zip(pre,y):
-                right += int((p[label!=-100]==label[label!=-100]).all())
+            for p,label,cl in zip(pre,y,cla):
+                p = p[label != -100]
+                w1 = p[0][dict_ver0]
+                w2 = p[1][dict_ver1]
+                w0 = torch.argmax(w1+w2)
+
+                right += int(index_2_label[w0]==cl)
         print(f'acc={right/len(dev_dataset):.5f}')
 
 
